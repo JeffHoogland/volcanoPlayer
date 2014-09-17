@@ -1,3 +1,5 @@
+#This file doesn't actually play songs when run, you need to run these commands in order from idle
+
 import playerVLC
 
 player = playerVLC.volcanoPlayer()
