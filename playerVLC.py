@@ -143,6 +143,7 @@ class volcanoPlayer(object):
         if self.player.is_playing():
             self.player.stop()
         self.player = vlc.MediaPlayer()
+        self.player.audio_set_delay( 2500 )
         self.event_manager = self.player.event_manager()
         self.event_manager.event_attach(vlc.EventType.MediaPlayerEndReached,      self.nextSong)
         self.curSong += 1
