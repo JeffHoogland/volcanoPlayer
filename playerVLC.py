@@ -2,17 +2,11 @@ import vlc
 import pandora
 import webbrowser
 import urllib
+import re
+import tempfile
+import os
 
-Download = False
-DownloadPath = "/media/sda5/Music/pandora/"
-
-def openBrowser(url):
-    print "Opening %s"%url
-    webbrowser.open(url)
-    try:
-        os.wait() # workaround for http://bugs.python.org/issue5993
-    except:
-        pass
+CachePath = tempfile.gettempdir()
 
 class volcanoPlayer(object):
     def __init__( self ):
@@ -20,7 +14,7 @@ class volcanoPlayer(object):
         self.curStation = ""
         self.curSong = -1
         self.playing = False
-        self.skip = False
+        self.skip = {'live':False, 'remix':False, 'edit':False, 'ban':False}
         self.die = False
         self.settings = {"username":"", "password":""}
         self.skinName = "Default"
@@ -28,16 +22,27 @@ class volcanoPlayer(object):
         self.songinfo = []
         self.displaysongs = []
         self.songCount = 0
+        self.songChangeCallBack = None
+        self.curVolume = 75
         self.player = vlc.MediaPlayer()
         
+    def setAutoSkip( self, sType, sBool ):
+        self.skip[sType] = sBool
+        
+    def setChangeCallBack( self, callback ):
+        self.songChangeCallBack = callback
+    
     def auth( self, user, passwd):
-        print "User %s - Password %s"%(user, passwd)
         self.settings['username'] = user
         self.settings['password'] = passwd
         try:
             self.pandora.connect(self.settings['username'], self.settings['password'])
         except:
             pass
+            
+    def setVolume( self, newVol ):
+        self.player.audio_set_volume( newVol )
+        self.curVolume = newVol
 
     def playSong( self ):
         self.playing = True
@@ -48,7 +53,7 @@ class volcanoPlayer(object):
         self.player.pause()
 
     def skipSong( self ):
-        self.nextSong("skip")
+        self.nextSong()
 
     def setStation( self, station ):
         self.curStation = pandora.Station(self.pandora, station)
@@ -97,15 +102,13 @@ class volcanoPlayer(object):
     def renameStation( self, station, name ):
         pandora.Station(self.pandora, station).rename(name)
 
-    def showSong( self ):
-        openBrowser(self.songinfo[self.curSong]['object'].songDetailURL)
-
-    def showAlbum( self ):
-        openBrowser(self.songinfo[self.curSong]['object'].albumDetailURL)
-
     def banSong( self ):
         info = self.songinfo[self.curSong]
         info['object'].rate('ban')
+        
+    def tiredSong( self ):
+        info = self.songinfo[self.curSong]
+        info['object'].set_tired()
 
     def loveSong( self ):
         info = self.songinfo[self.curSong]
@@ -114,6 +117,7 @@ class volcanoPlayer(object):
     def clearSongs( self ):
         self.song = None
         self.songCount = 0
+        self.curSong = -1
         self.songinfo = []
         self.displaysongs = []
 
@@ -126,37 +130,66 @@ class volcanoPlayer(object):
         	 "thumbnail"	:	song.artRadio, \
              "url"      : str(song.audioUrl), \
              "rating"   : song.rating, \
-             "object"   : song
+             "object"   : song, \
+             "caching"  : False, \
+             "localpath"     : False
         	}
-            self.songinfo.append(info)
+            
+            #Apply Filters
+            if (re.search('\[.*mix.*\]', info['title'].lower()) or re.search('\(.*mix.*\)', info['title'].lower())) and self.skip['remix']:
+                if self.skip['ban']:
+                    info['object'].rate('ban')
+            elif (re.search('\[.*live.*\]', info['title'].lower()) or re.search('\(.*live.*\)', info['title'].lower())) and self.skip['live']:
+                if self.skip['ban']:
+                    info['object'].rate('ban')
+            elif (re.search('\[.*edit.*\]', info['title'].lower()) or re.search('\(.*edit.*\)', info['title'].lower())) and self.skip['edit']:
+                if self.skip['ban']:
+                    info['object'].rate('ban')
+            else:
+                #If it isn't filtered out, add it to play list.
+                self.songinfo.append(info)
         if not self.song:
             self.startPlaying()
+            
+    def cacheSong( self, songNumber ):
+        info = self.songinfo[songNumber]
+        if not info["caching"]:
+            print "Caching song %s"%info['title']
+            info["caching"] = True
+            urllib.urlretrieve(str(info['url']), os.path.join(CachePath, "%s.mp3"%info['title']))
+            info["localpath"] = os.path.join(CachePath, "%s.mp3"%info['title'])
 
     def startPlaying( self ):
         self.nextSong()
+            
+    def setAudioFormat( self, fmt ):
+        self.pandora.set_audio_format("%sQuality"%fmt.lower())
 
-    def check_download( self, url, title ):
-        if Download:
-            urllib.urlretrieve(str(url), '%s%s.mp3'%(DownloadPath, title))
+    def nextSong( self, event=False ):
+        self.curSong += 1
 
-    def nextSong( self , event=False ):
+        info = self.songinfo[self.curSong]
         if self.player.is_playing():
             self.player.stop()
         self.player = vlc.MediaPlayer()
-        self.player.audio_set_delay( 2500 )
+        self.player.audio_set_volume( self.curVolume )
         self.event_manager = self.player.event_manager()
         self.event_manager.event_attach(vlc.EventType.MediaPlayerEndReached,      self.nextSong)
-        self.curSong += 1
         info = self.songinfo[self.curSong]
         self.displaysongs.append(info)
         self.song = info['title']
-        print(info['url'])
-        self.player.set_media(vlc.Media(info['url']))
+        if info['localpath']:
+            print "Playing song from cache"
+            self.player.set_media(vlc.Media(info['localpath']))
+        else:
+            print "Playing song live from URL"
+            self.player.set_media(vlc.Media(info['url']))
         self.playing = True
         self.player.play()
-        print("Playing: %s"%info['title'])
-        print(self.player.is_playing())
-        #self.curSong += 1
+        self.songChangeCallBack()
+        self.player.audio_set_delay( 2500 )
+        print self.player.audio_get_delay()
+        
         if self.curSong >= len(self.songinfo)-1:
             self.addSongs()
         self.songCount += 1
